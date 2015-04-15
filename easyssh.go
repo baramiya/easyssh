@@ -78,25 +78,27 @@ func (ssh_conf *MakeConfig) connect() (*ssh.Client, *ssh.Session, error) {
 }
 
 // Runs command on remote machine and returns STDOUT
-func (ssh_conf *MakeConfig) Run(command string) (string, error) {
+func (ssh_conf *MakeConfig) Run(command string) (string, string, error) {
 	client, session, err := ssh_conf.connect()
 
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	defer func() {
 		session.Close()
 		client.Close()
 	}()
 
-	var b bytes.Buffer
-	session.Stdout = &b
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	session.Stdout = &stdout
+	session.Stderr = &stderr
 	err = session.Run(command)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
-	return b.String(), nil
+	return stdout.String(), stderr.String(), nil
 }
 
 // Scp uploads sourceFile to remote machine like native scp console app.
