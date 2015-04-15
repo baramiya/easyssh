@@ -29,6 +29,13 @@ type MakeConfig struct {
 	Port   string
 }
 
+// Contains command run result.
+type Response struct {
+	Stdout string
+	Stderr string
+	Error  error
+}
+
 // returns ssh.Signer from user you running app home path + cutted key path.
 // (ex. pubkey,err := getKeyFile("/.ssh/id_rsa") )
 func getKeyFile(keypath string) (ssh.Signer, error) {
@@ -78,11 +85,12 @@ func (ssh_conf *MakeConfig) connect() (*ssh.Client, *ssh.Session, error) {
 }
 
 // Runs command on remote machine and returns STDOUT
-func (ssh_conf *MakeConfig) Run(command string) (string, string, error) {
+func (ssh_conf *MakeConfig) Run(command string) (response Response) {
 	client, session, err := ssh_conf.connect()
 
 	if err != nil {
-		return "", "", err
+		response.Error = err
+		return
 	}
 	defer func() {
 		session.Close()
@@ -94,11 +102,11 @@ func (ssh_conf *MakeConfig) Run(command string) (string, string, error) {
 	session.Stdout = &stdout
 	session.Stderr = &stderr
 	err = session.Run(command)
-	if err != nil {
-		return "", "", err
-	}
+	response.Stdout = stdout.String()
+	response.Stderr = stderr.String()
+	response.Error = err
 
-	return stdout.String(), stderr.String(), nil
+	return response
 }
 
 // Scp uploads sourceFile to remote machine like native scp console app.
