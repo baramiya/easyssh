@@ -27,6 +27,8 @@ type MakeConfig struct {
 	Server string
 	Key    string
 	Port   string
+
+	Client *ssh.Client
 }
 
 // Contains command run result.
@@ -58,35 +60,47 @@ func getKeyFile(keypath string) (ssh.Signer, error) {
 	return pubkey, nil
 }
 
+// disconnects from remote server
+func (ssh_conf *MakeConfig) close() {
+	if ssh_conf.Client != nil {
+		ssh_conf.Client.Close()
+		ssh_conf.Client = nil
+	}
+}
+
 // connects to remote server using MakeConfig struct and returns *ssh.Session
-func (ssh_conf *MakeConfig) connect() (*ssh.Client, *ssh.Session, error) {
-	pubkey, err := getKeyFile(ssh_conf.Key)
+func (ssh_conf *MakeConfig) connect() (*ssh.Session, error) {
+	if ssh_conf.Client == nil {
+		pubkey, err := getKeyFile(ssh_conf.Key)
+		if err != nil {
+			return nil, err
+		}
+
+		config := &ssh.ClientConfig{
+			User: ssh_conf.User,
+			Auth: []ssh.AuthMethod{ssh.PublicKeys(pubkey)},
+		}
+
+		client, err := ssh.Dial("tcp", ssh_conf.Server+":"+ssh_conf.Port, config)
+		if err != nil {
+			return nil, err
+		}
+
+		ssh_conf.Client = client
+	}
+
+	session, err := ssh_conf.Client.NewSession()
 	if err != nil {
-		return nil, nil, err
+		ssh_conf.close()
+		return nil, err
 	}
 
-	config := &ssh.ClientConfig{
-		User: ssh_conf.User,
-		Auth: []ssh.AuthMethod{ssh.PublicKeys(pubkey)},
-	}
-
-	client, err := ssh.Dial("tcp", ssh_conf.Server+":"+ssh_conf.Port, config)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	session, err := client.NewSession()
-	if err != nil {
-		client.Close()
-		return nil, nil, err
-	}
-
-	return client, session, nil
+	return session, nil
 }
 
 // Runs command on remote machine and returns STDOUT
 func (ssh_conf *MakeConfig) Run(command string) (response Response) {
-	client, session, err := ssh_conf.connect()
+	session, err := ssh_conf.connect()
 
 	if err != nil {
 		response.Error = err
@@ -94,7 +108,6 @@ func (ssh_conf *MakeConfig) Run(command string) (response Response) {
 	}
 	defer func() {
 		session.Close()
-		client.Close()
 	}()
 
 	var stdout bytes.Buffer
@@ -111,14 +124,13 @@ func (ssh_conf *MakeConfig) Run(command string) (response Response) {
 
 // Scp uploads sourceFile to remote machine like native scp console app.
 func (ssh_conf *MakeConfig) Scp(sourceFile string) error {
-	client, session, err := ssh_conf.connect()
+	session, err := ssh_conf.connect()
 
 	if err != nil {
 		return err
 	}
 	defer func() {
 		session.Close()
-		client.Close()
 	}()
 
 	targetFile := filepath.Base(sourceFile)
