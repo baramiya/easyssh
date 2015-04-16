@@ -103,6 +103,7 @@ func (ssh_conf *MakeConfig) Run(command string) (response Response) {
 	session, err := ssh_conf.connect()
 
 	if err != nil {
+		ssh_conf.close()
 		response.Error = err
 		return
 	}
