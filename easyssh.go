@@ -12,6 +12,7 @@ import (
 	"os/user"
 	"path/filepath"
 
+	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -28,7 +29,8 @@ type MakeConfig struct {
 	Key    string
 	Port   string
 
-	Client *ssh.Client
+	Client     *ssh.Client
+	SftpClient *sftp.Client
 }
 
 // Contains command run result.
@@ -137,10 +139,10 @@ func (ssh_conf *MakeConfig) Scp(sourceFile string) error {
 	targetFile := filepath.Base(sourceFile)
 
 	src, srcErr := os.Open(sourceFile)
-
 	if srcErr != nil {
 		return srcErr
 	}
+	defer src.Close()
 
 	srcStat, statErr := src.Stat()
 
@@ -164,6 +166,43 @@ func (ssh_conf *MakeConfig) Scp(sourceFile string) error {
 	}()
 
 	if err := session.Run(fmt.Sprintf("scp -t %s", targetFile)); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// Sftp uploads sourceFile to remote machine
+func (ssh_conf *MakeConfig) Sftp(src, dst string) error {
+	session, err := ssh_conf.connect()
+	if err != nil {
+		ssh_conf.close()
+		return err
+	}
+	defer session.Close()
+
+	ssh_conf.SftpClient, err = sftp.NewClient(ssh_conf.Client)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		ssh_conf.SftpClient.Close()
+		ssh_conf.SftpClient = nil
+	}()
+
+	sf, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer sf.Close()
+
+	f, err := ssh_conf.SftpClient.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	if _, err := io.Copy(f, sf); err != nil {
 		return err
 	}
 
