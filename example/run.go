@@ -11,16 +11,19 @@ func main() {
 	ssh := &easyssh.MakeConfig{
 		User:   "john",
 		Server: "example.com",
-		Key:    "/.ssh/id_rsa",
+		// Optional key or Password without either we try to contact your agent SOCKET
+		//Password: "password",
+		Key:  "/.ssh/id_rsa",
 		Port: "22",
 	}
 
 	// Call Run method with command you want to run on remote server.
-	response, err := ssh.Run("ps ax")
+	stdout, stderr, done, err := ssh.Run("ps ax", 60)
 	// Handle errors
 	if err != nil {
 		panic("Can't run remote command: " + err.Error())
 	} else {
-		fmt.Println(response)
+		fmt.Println("don is :", done, "stdout is :", stdout, ";   stderr is :", stderr)
 	}
+
 }
