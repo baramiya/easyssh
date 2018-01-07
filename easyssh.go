@@ -28,18 +28,13 @@ import (
 // Note: easyssh looking for private key in user's home directory (ex. /home/john + Key).
 // Then ensure your Key begins from '/' (ex. /.ssh/id_rsa)
 type MakeConfig struct {
-	User     string
-	Server   string
-	Key      string
-	Port     string
-	Password string
-}
-
-// Contains command run result.
-type Response struct {
-	Stdout string
-	Stderr string
-	Error  error
+	User       string
+	Server     string
+	Key        string
+	Port       string
+	Password   string
+	SshClient  *ssh.Client
+	SftpClient *sftp.Client
 }
 
 // returns ssh.Signer from user you running app home path + cutted key path.
@@ -64,49 +59,46 @@ func getKeyFile(keypath string) (ssh.Signer, error) {
 	return pubkey, nil
 }
 
-// disconnects from remote server
-func (ssh_conf *MakeConfig) close() {
-	if ssh_conf.Client != nil {
-		ssh_conf.Client.Close()
-		ssh_conf.Client = nil
-	}
-}
-
 // connects to remote server using MakeConfig struct and returns *ssh.Session
 func (ssh_conf *MakeConfig) connect() (*ssh.Session, error) {
-	// auths holds the detected ssh auth methods
-	auths := []ssh.AuthMethod{}
+	if ssh_conf.SshClient == nil {
+		// auths holds the detected ssh auth methods
+		auths := []ssh.AuthMethod{}
 
-	// figure out what auths are requested, what is supported
-	if ssh_conf.Password != "" {
-		auths = append(auths, ssh.Password(ssh_conf.Password))
-	}
+		// figure out what auths are requested, what is supported
+		if ssh_conf.Password != "" {
+			auths = append(auths, ssh.Password(ssh_conf.Password))
+		}
 
-	if sshAgent, err := net.Dial("unix", os.Getenv("SSH_AUTH_SOCK")); err == nil {
-		auths = append(auths, ssh.PublicKeysCallback(agent.NewClient(sshAgent).Signers))
-		defer sshAgent.Close()
-	}
+		if sshAgent, err := net.Dial("unix", os.Getenv("SSH_AUTH_SOCK")); err == nil {
+			auths = append(auths, ssh.PublicKeysCallback(agent.NewClient(sshAgent).Signers))
+			defer sshAgent.Close()
+		}
 
-	if pubkey, err := getKeyFile(ssh_conf.Key); err == nil {
-		auths = append(auths, ssh.PublicKeys(pubkey))
-	}
+		if pubkey, err := getKeyFile(ssh_conf.Key); err == nil {
+			auths = append(auths, ssh.PublicKeys(pubkey))
+		}
 
-	config := &ssh.ClientConfig{
-		User: ssh_conf.User,
-		Auth: auths,
-	}
+		config := &ssh.ClientConfig{
+			User:            ssh_conf.User,
+			Auth:            auths,
+			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		}
 
 		client, err := ssh.Dial("tcp", ssh_conf.Server+":"+ssh_conf.Port, config)
 		if err != nil {
 			return nil, err
 		}
 
-		ssh_conf.Client = client
+		ssh_conf.SshClient = client
 	}
 
-	session, err := ssh_conf.Client.NewSession()
+	session, err := ssh_conf.SshClient.NewSession()
 	if err != nil {
-		ssh_conf.close()
+		if ssh_conf.SshClient != nil {
+			ssh_conf.SshClient.Close()
+			ssh_conf.SshClient = nil
+		}
 		return nil, err
 	}
 
@@ -122,13 +114,16 @@ func (ssh_conf *MakeConfig) Stream(command string, timeout int) (stdout chan str
 	if err != nil {
 		return stdout, stderr, done, err
 	}
+
 	// connect to both outputs (they are of type io.Reader)
 	outReader, err := session.StdoutPipe()
 	if err != nil {
+		session.Close()
 		return stdout, stderr, done, err
 	}
 	errReader, err := session.StderrPipe()
 	if err != nil {
+		session.Close()
 		return stdout, stderr, done, err
 	}
 	// combine outputs, create a line-by-line scanner
@@ -206,9 +201,7 @@ func (ssh_conf *MakeConfig) Scp(sourceFile string, etargetFile string) error {
 	if err != nil {
 		return err
 	}
-	defer func() {
-		session.Close()
-	}()
+	defer session.Close()
 
 	targetFile := filepath.Base(etargetFile)
 
@@ -250,33 +243,29 @@ func (ssh_conf *MakeConfig) Scp(sourceFile string, etargetFile string) error {
 func (ssh_conf *MakeConfig) Sftp(src, dst string) error {
 	session, err := ssh_conf.connect()
 	if err != nil {
-		ssh_conf.close()
 		return err
 	}
 	defer session.Close()
 
-	ssh_conf.SftpClient, err = sftp.NewClient(ssh_conf.Client)
+	ssh_conf.SftpClient, err = sftp.NewClient(ssh_conf.SshClient)
 	if err != nil {
 		return err
 	}
-	defer func() {
-		ssh_conf.SftpClient.Close()
-		ssh_conf.SftpClient = nil
-	}()
+	defer ssh_conf.SftpClient.Close()
 
-	sf, err := os.Open(src)
+	srcFile, err := os.Open(src)
 	if err != nil {
 		return err
 	}
-	defer sf.Close()
+	defer srcFile.Close()
 
-	f, err := ssh_conf.SftpClient.Create(dst)
+	dstFile, err := ssh_conf.SftpClient.Create(dst)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer dstFile.Close()
 
-	if _, err := io.Copy(f, sf); err != nil {
+	if _, err := io.Copy(dstFile, srcFile); err != nil {
 		return err
 	}
 
