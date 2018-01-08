@@ -15,7 +15,7 @@ import (
 )
 
 type (
-	easySSH struct {
+	EasySSH struct {
 		Host string
 		Port string
 		User string
@@ -35,14 +35,14 @@ type (
 	}
 )
 
-func New() *easySSH {
-	return &easySSH{
+func New() *EasySSH {
+	return &EasySSH{
 		Port: "22",
 		KeyPath: "~/.ssh/id_rsa",
 	}
 }
 
-func (easySSH *easySSH) setKeySigner() error {
+func (easySSH *EasySSH) setKeySigner() error {
 	privateKeyPath, err := homedir.Expand(easySSH.KeyPath)
 	if err != nil {
 		return err
@@ -60,7 +60,7 @@ func (easySSH *easySSH) setKeySigner() error {
 	return nil
 }
 
-func (easySSH *easySSH) newClient() (*ssh.Client, error) {
+func (easySSH *EasySSH) newClient() (*ssh.Client, error) {
 	if easySSH.SSHClient == nil {
 		authMethods := []ssh.AuthMethod{}
 		if easySSH.Password != "" {
@@ -90,7 +90,7 @@ func (easySSH *easySSH) newClient() (*ssh.Client, error) {
 	return easySSH.SSHClient, nil
 }
 
-func (easySSH *easySSH) ExecCommand(command string, timeout int) (*sshOutput, error) {
+func (easySSH *EasySSH) ExecCommand(command string, timeout int) (*sshOutput, error) {
 	output := &sshOutput{
 		Command: command,
 		Timeout: timeout,
@@ -158,7 +158,7 @@ func (easySSH *easySSH) ExecCommand(command string, timeout int) (*sshOutput, er
 	}
 }
 
-func (easySSH *easySSH) Scp(sourceFilePath, targetFilePath string) error {
+func (easySSH *EasySSH) Scp(sourceFilePath, targetFilePath string) error {
 	client, err := easySSH.newClient()
 	if err != nil {
 		return err
@@ -206,7 +206,7 @@ func (easySSH *easySSH) Scp(sourceFilePath, targetFilePath string) error {
 	return nil
 }
 
-func (easySSH *easySSH) Sftp(sourceFilePath, targetFilePath string) error {
+func (easySSH *EasySSH) Sftp(sourceFilePath, targetFilePath string) error {
 	client, err := easySSH.newClient()
 	if err != nil {
 		return err
