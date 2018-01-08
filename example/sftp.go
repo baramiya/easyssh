@@ -10,8 +10,8 @@ func main() {
 	ssh.Host = "localhost"
 	ssh.User = "john"
 
-	// Call Scp method with file you want to upload to remote server
-	err := ssh.Scp("/tmp/source.csv", "/tmp/target.csv")
+	// Call Sftp method with file you want to upload to remote server
+	err := ssh.Sftp("/tmp/source.csv", "/tmp/target.csv")
 
 	// Handle errors
 	if err != nil {

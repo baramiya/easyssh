@@ -1,229 +1,196 @@
-// Package easyssh provides a simple implementation of some SSH protocol
-// features in Go. You can simply run a command on a remote server or get a file
-// even simpler than native console SSH client. You don't need to think about
-// Dials, sessions, defers, or public keys... Let easyssh think about it!
+
 package easyssh
 
 import (
-	"bufio"
 	"fmt"
 	"io"
 	"io/ioutil"
-	"net"
 	"os"
-	"os/user"
 	"path/filepath"
-	"time"
-
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
-	"golang.org/x/crypto/ssh/agent"
+	"github.com/mitchellh/go-homedir"
+	"bytes"
+	"time"
 )
 
-// Contains main authority information.
-// User field should be a name of user on remote server (ex. john in ssh john@example.com).
-// Server field should be a remote machine address (ex. example.com in ssh john@example.com)
-// Key is a path to private key on your local machine.
-// Port is SSH server port on remote machine.
-// Note: easyssh looking for private key in user's home directory (ex. /home/john + Key).
-// Then ensure your Key begins from '/' (ex. /.ssh/id_rsa)
-type MakeConfig struct {
-	User       string
-	Server     string
-	Key        string
-	Port       string
-	Password   string
-	SshClient  *ssh.Client
-	SftpClient *sftp.Client
+type (
+	easySSH struct {
+		Host string
+		Port string
+		User string
+		Password string
+		KeyPath string
+
+		KeySigner  ssh.Signer
+		SSHClient  *ssh.Client
+		SFTPClient *sftp.Client
+	}
+	sshOutput struct {
+		Command string
+		Timeout int
+		Error   error
+		Stdout  string
+		Stderr  string
+	}
+)
+
+func New() *easySSH {
+	return &easySSH{
+		Port: "22",
+		KeyPath: "~/.ssh/id_rsa",
+	}
 }
 
-// returns ssh.Signer from user you running app home path + cutted key path.
-// (ex. pubkey,err := getKeyFile("/.ssh/id_rsa") )
-func getKeyFile(keypath string) (ssh.Signer, error) {
-	usr, err := user.Current()
+func (easySSH *easySSH) setKeySigner() error {
+	privateKeyPath, err := homedir.Expand(easySSH.KeyPath)
 	if err != nil {
-		return nil, err
+		return err
+	}
+	privateKeyBytes, err := ioutil.ReadFile(privateKeyPath)
+	if err != nil {
+		return err
+	}
+	privateKey, err := ssh.ParsePrivateKey(privateKeyBytes)
+	if err != nil {
+		return err
 	}
 
-	file := usr.HomeDir + keypath
-	buf, err := ioutil.ReadFile(file)
-	if err != nil {
-		return nil, err
-	}
-
-	pubkey, err := ssh.ParsePrivateKey(buf)
-	if err != nil {
-		return nil, err
-	}
-
-	return pubkey, nil
+	easySSH.KeySigner = privateKey
+	return nil
 }
 
-// connects to remote server using MakeConfig struct and returns *ssh.Session
-func (ssh_conf *MakeConfig) connect() (*ssh.Session, error) {
-	if ssh_conf.SshClient == nil {
-		// auths holds the detected ssh auth methods
-		auths := []ssh.AuthMethod{}
-
-		// figure out what auths are requested, what is supported
-		if ssh_conf.Password != "" {
-			auths = append(auths, ssh.Password(ssh_conf.Password))
+func (easySSH *easySSH) newClient() (*ssh.Client, error) {
+	if easySSH.SSHClient == nil {
+		authMethods := []ssh.AuthMethod{}
+		if easySSH.Password != "" {
+			authMethods = append(authMethods, ssh.Password(easySSH.Password))
+		}
+		if easySSH.KeyPath != "" {
+			if err := easySSH.setKeySigner(); err == nil {
+				authMethods = append(authMethods, ssh.PublicKeys(easySSH.KeySigner))
+			}
 		}
 
-		if sshAgent, err := net.Dial("unix", os.Getenv("SSH_AUTH_SOCK")); err == nil {
-			auths = append(auths, ssh.PublicKeysCallback(agent.NewClient(sshAgent).Signers))
-			defer sshAgent.Close()
-		}
-
-		if pubkey, err := getKeyFile(ssh_conf.Key); err == nil {
-			auths = append(auths, ssh.PublicKeys(pubkey))
-		}
-
-		config := &ssh.ClientConfig{
-			User:            ssh_conf.User,
-			Auth:            auths,
+		clientConfig := &ssh.ClientConfig{
+			User:            easySSH.User,
+			Auth:            authMethods,
 			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+			Timeout:         500 * time.Millisecond,
 		}
 
-		client, err := ssh.Dial("tcp", ssh_conf.Server+":"+ssh_conf.Port, config)
+		client, err := ssh.Dial("tcp", easySSH.Host+":"+easySSH.Port, clientConfig)
 		if err != nil {
 			return nil, err
 		}
 
-		ssh_conf.SshClient = client
+		easySSH.SSHClient = client
 	}
 
-	session, err := ssh_conf.SshClient.NewSession()
-	if err != nil {
-		if ssh_conf.SshClient != nil {
-			ssh_conf.SshClient.Close()
-			ssh_conf.SshClient = nil
-		}
-		return nil, err
-	}
-
-	return session, nil
+	return easySSH.SSHClient, nil
 }
 
-// Stream returns one channel that combines the stdout and stderr of the command
-// as it is run on the remote machine, and another that sends true when the
-// command is done. The sessions and channels will then be closed.
-func (ssh_conf *MakeConfig) Stream(command string, timeout int) (stdout chan string, stderr chan string, done chan bool, err error) {
-	// connect to remote host
-	session, err := ssh_conf.connect()
-	if err != nil {
-		return stdout, stderr, done, err
+func (easySSH *easySSH) ExecCommand(command string, timeout int) (*sshOutput, error) {
+	output := &sshOutput{
+		Command: command,
+		Timeout: timeout,
 	}
 
-	// connect to both outputs (they are of type io.Reader)
-	outReader, err := session.StdoutPipe()
-	if err != nil {
-		session.Close()
-		return stdout, stderr, done, err
-	}
-	errReader, err := session.StderrPipe()
-	if err != nil {
-		session.Close()
-		return stdout, stderr, done, err
-	}
-	// combine outputs, create a line-by-line scanner
-	stdoutReader := io.MultiReader(outReader)
-	stderrReader := io.MultiReader(errReader)
-	err = session.Start(command)
-	stdoutScanner := bufio.NewScanner(stdoutReader)
-	stderrScanner := bufio.NewScanner(stderrReader)
-	// continuously send the command's output over the channel
-	stdoutChan := make(chan string)
-	stderrChan := make(chan string)
-	done = make(chan bool)
+	cancel := make(chan interface{})
+	ch := make(chan *sshOutput)
 
-	go func(stdoutScanner, stderrScanner *bufio.Scanner, stdoutChan, stderrChan chan string, done chan bool) {
-		defer close(stdoutChan)
-		defer close(stderrChan)
-		defer close(done)
-
-		timeoutChan := time.After(time.Duration(timeout) * time.Second)
-		res := make(chan bool, 1)
-
-		go func() {
-			for stdoutScanner.Scan() {
-				stdoutChan <- stdoutScanner.Text()
-			}
-			for stderrScanner.Scan() {
-				stderrChan <- stderrScanner.Text()
-			}
-			// close all of our open resources
-			res <- true
-		}()
+	go func() {
+		client, err := easySSH.newClient()
+		if err != nil {
+			output.Stderr = "Could not establish ssh connection"
+			output.Error = err
+			ch <- output
+			return
+		}
 
 		select {
-		case <-res:
-			stdoutChan <- ""
-			stderrChan <- ""
-			done <- true
-		case <-timeoutChan:
-			stdoutChan <- ""
-			stderrChan <- "Run Command Timeout!"
-			done <- false
+		case <-cancel:
+			return
+		default:
 		}
 
-		session.Close()
-	}(stdoutScanner, stderrScanner, stdoutChan, stderrChan, done)
-	return stdoutChan, stderrChan, done, err
-}
+		session, err := client.NewSession()
+		if err != nil {
+			output.Stderr = "Could not establish ssh session"
+			output.Error = err
 
-// Runs command on remote machine and returns its stdout as a string
-func (ssh_conf *MakeConfig) Run(command string, timeout int) (outStr string, errStr string, isTimeout bool, err error) {
-	stdoutChan, stderrChan, doneChan, err := ssh_conf.Stream(command, timeout)
-	if err != nil {
-		return outStr, errStr, isTimeout, err
-	}
-	// read from the output channel until the done signal is passed
-	stillGoing := true
-	for stillGoing {
+			easySSH.SSHClient.Close()
+			easySSH.SSHClient = nil
+			ch <- output
+			return
+		}
+
 		select {
-		case isTimeout = <-doneChan:
-			stillGoing = false
-		case outline := <-stdoutChan:
-			outStr += outline + "\n"
-		case errline := <-stderrChan:
-			errStr += errline + "\n"
+		case <-cancel:
+			session.Close()
+			return
+		default:
 		}
+
+		var stdout, stderr bytes.Buffer
+		session.Stdout, session.Stderr = &stdout, &stderr
+		if err := session.Run(command); err != nil {
+			output.Error = err
+		}
+		session.Close()
+		output.Stdout = stdout.String()
+		output.Stderr = stderr.String()
+
+		select {
+		case <-cancel:
+			return
+		case ch <- output:
+		}
+	}()
+
+	select {
+	case output := <-ch:
+		return output, output.Error
+	case <- time.After(time.Duration(timeout) * time.Millisecond):
+		cancel <- true
+		output.Stderr = "Timeout exceeded while running command on the remote host"
+		return output, fmt.Errorf("command running timeout exceeded")
 	}
-	// return the concatenation of all signals from the output channel
-	return outStr, errStr, isTimeout, err
 }
 
-// Scp uploads sourceFile to remote machine like native scp console app.
-func (ssh_conf *MakeConfig) Scp(sourceFile string, etargetFile string) error {
-	session, err := ssh_conf.connect()
-
+func (easySSH *easySSH) Scp(sourceFilePath, targetFilePath string) error {
+	client, err := easySSH.newClient()
 	if err != nil {
+		return err
+	}
+
+	session, err := client.NewSession()
+	if err != nil {
+		easySSH.SSHClient.Close()
+		easySSH.SSHClient = nil
 		return err
 	}
 	defer session.Close()
 
-	targetFile := filepath.Base(etargetFile)
-
-	src, srcErr := os.Open(sourceFile)
-	if srcErr != nil {
-		return srcErr
+	sourceFile, err := os.Open(sourceFilePath)
+	if err != nil {
+		return err
 	}
-	defer src.Close()
+	defer sourceFile.Close()
 
-	srcStat, statErr := src.Stat()
-
-	if statErr != nil {
-		return statErr
+	sourceFileStat, err := sourceFile.Stat()
+	if err != nil {
+		return err
 	}
 
+	targetFile := filepath.Base(targetFilePath)
 	go func() {
 		w, _ := session.StdinPipe()
 
-		fmt.Fprintln(w, "C0644", srcStat.Size(), targetFile)
+		fmt.Fprintln(w, "C0644", sourceFileStat.Size(), targetFile)
 
-		if srcStat.Size() > 0 {
-			io.Copy(w, src)
+		if sourceFileStat.Size() > 0 {
+			io.Copy(w, sourceFile)
 			fmt.Fprint(w, "\x00")
 			w.Close()
 		} else {
@@ -232,40 +199,49 @@ func (ssh_conf *MakeConfig) Scp(sourceFile string, etargetFile string) error {
 		}
 	}()
 
-	if err := session.Run(fmt.Sprintf("scp -tr %s", etargetFile)); err != nil {
+	if err := session.Run(fmt.Sprintf("scp -tr %s", targetFilePath)); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-// Sftp uploads sourceFile to remote machine
-func (ssh_conf *MakeConfig) Sftp(src, dst string) error {
-	session, err := ssh_conf.connect()
+func (easySSH *easySSH) Sftp(sourceFilePath, targetFilePath string) error {
+	client, err := easySSH.newClient()
 	if err != nil {
+		return err
+	}
+
+	session, err := client.NewSession()
+	if err != nil {
+		easySSH.SSHClient.Close()
+		easySSH.SSHClient = nil
 		return err
 	}
 	defer session.Close()
 
-	ssh_conf.SftpClient, err = sftp.NewClient(ssh_conf.SshClient)
+	easySSH.SFTPClient, err = sftp.NewClient(easySSH.SSHClient)
 	if err != nil {
 		return err
 	}
-	defer ssh_conf.SftpClient.Close()
+	defer func() {
+		easySSH.SFTPClient.Close()
+		easySSH.SFTPClient = nil
+	}()
 
-	srcFile, err := os.Open(src)
+	sourceFile, err := os.Open(sourceFilePath)
 	if err != nil {
 		return err
 	}
-	defer srcFile.Close()
+	defer sourceFile.Close()
 
-	dstFile, err := ssh_conf.SftpClient.Create(dst)
+	targetFile, err := easySSH.SFTPClient.Create(targetFilePath)
 	if err != nil {
 		return err
 	}
-	defer dstFile.Close()
+	defer targetFile.Close()
 
-	if _, err := io.Copy(dstFile, srcFile); err != nil {
+	if _, err := io.Copy(targetFile, sourceFile); err != nil {
 		return err
 	}
 

@@ -2,28 +2,21 @@ package main
 
 import (
 	"fmt"
-
 	"github.com/baramiya/easyssh"
 )
 
 func main() {
-	// Create MakeConfig instance with remote username, server address and path to private key.
-	ssh := &easyssh.MakeConfig{
-		User:   "john",
-		Server: "example.com",
-		// Optional key or Password without either we try to contact your agent SOCKET
-		//Password: "password",
-		Key:  "/.ssh/id_rsa",
-		Port: "22",
-	}
+	ssh := easyssh.New()
+	ssh.Host = "localhost"
+	ssh.User = "john"
 
-	// Call Run method with command you want to run on remote server.
-	stdout, stderr, done, err := ssh.Run("ps ax", 60)
+	// Call ExecCommand method to run a command on the remote server
+	output, err := ssh.ExecCommand("ps ax", 1000)
+
 	// Handle errors
 	if err != nil {
-		panic("Can't run remote command: " + err.Error())
+		panic(fmt.Sprintf("Can't run remote command[%s]: %s: %s", output.Command, output.Stderr, err.Error()))
 	} else {
-		fmt.Println("don is :", done, "stdout is :", stdout, ";   stderr is :", stderr)
+		fmt.Println("stdout is :", output.Stdout, ";   stderr is :", output.Stderr)
 	}
-
 }

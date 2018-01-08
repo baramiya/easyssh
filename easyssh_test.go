@@ -4,57 +4,64 @@ import (
 	"testing"
 )
 
-var sshConfig = &MakeConfig{
-	User:     "root",
-	Server:   "172.30.19.2",
-	Password: "password",
-	//Key:  "/.ssh/id_rsa",
-	Port: "22",
-}
-
-func TestStream(t *testing.T) {
-	t.Parallel()
-	// input command/output string pairs
-	testCases := [][]string{
-		{`for i in $(seq 1 5); do echo "$i"; done`, "12345"},
-		{`echo "test"`, "test"},
-	}
-	for _, testCase := range testCases {
-		outChannel, errChannel, done, err := sshConfig.Stream(testCase[0], 10)
-		if err != nil {
-			t.Errorf("Stream failed: %s", err)
-		}
-		stillGoing := true
-		stdout := ""
-		stderr := ""
-		for stillGoing {
-			select {
-			case <-done:
-				stillGoing = false
-			case line := <-outChannel:
-				stdout += line
-			case line := <-errChannel:
-				stderr += line
-			}
-		}
-		if stdout != testCase[1] {
-			t.Error("Output didn't match expected: %s,%s", stdout, stderr)
-		}
+func TestEasySSH_New(t *testing.T) {
+	ssh := New()
+	if ssh == nil || ssh.Port != "22" || ssh.KeyPath != "~/.ssh/id_rsa" {
+		t.FailNow()
 	}
 }
 
-func TestRun(t *testing.T) {
-	t.Parallel()
-	commands := []string{
-		"echo test", `for i in $(ls); do echo "$i"; done`, "ls",
+func TestEasySSH_setKeySigner(t *testing.T) {
+	ssh := New()
+	if err := ssh.setKeySigner(); err != nil {
+		t.FailNow()
 	}
-	for _, cmd := range commands {
-		stdout, stderr, istimeout, err := sshConfig.Run(cmd, 10)
-		if err != nil {
-			t.Errorf("Run failed: %s", err)
-		}
-		if stdout == "" {
-			t.Errorf("Output was empty for command: %s,%s,%s", cmd, stdout, stderr, istimeout)
-		}
+
+	ssh.KeyPath = "testFiles/id_rsa"
+	if err := ssh.setKeySigner(); err == nil {
+		t.FailNow()
+	}
+
+	ssh.KeyPath = "testFiles/id_rsa.pub"
+	if err := ssh.setKeySigner(); err == nil {
+		t.FailNow()
+	}
+}
+
+func TestEasySSH_newClient(t *testing.T) {
+	ssh := New()
+	client, err := ssh.newClient()
+	if client != nil || err == nil {
+		t.FailNow()
+	}
+
+	ssh.Host = "sdf.org"
+	ssh.Port = "22"
+	ssh.User = "new"
+
+	client, err = ssh.newClient()
+	if client == nil || err != nil {
+		t.FailNow()
+	}
+
+	clientNew, err := ssh.newClient()
+	if client != clientNew {
+		t.FailNow()
+	}
+}
+
+func TestEasySSH_ExecCommand(t *testing.T) {
+	ssh := New()
+	ssh.Host = "sdf.org"
+	ssh.User = "new"
+
+	output, _ := ssh.ExecCommand("echo", 1000)
+	if output.Stderr != "Timeout exceeded while running command on the remote host" {
+		t.FailNow()
+	}
+
+	output, _ = ssh.ExecCommand("echo", 5000)
+	if output.Stderr == "Timeout exceeded while running command on the remote host" {
+		t.FailNow()
 	}
 }
