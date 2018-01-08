@@ -1,4 +1,3 @@
-
 package easyssh
 
 import (
@@ -16,11 +15,11 @@ import (
 
 type (
 	EasySSH struct {
-		Host string
-		Port string
-		User string
+		Host     string
+		Port     string
+		User     string
 		Password string
-		KeyPath string
+		KeyPath  string
 
 		KeySigner  ssh.Signer
 		SSHClient  *ssh.Client
@@ -28,7 +27,6 @@ type (
 	}
 	sshOutput struct {
 		Command string
-		Timeout int
 		Error   error
 		Stdout  string
 		Stderr  string
@@ -37,7 +35,7 @@ type (
 
 func New() *EasySSH {
 	return &EasySSH{
-		Port: "22",
+		Port:    "22",
 		KeyPath: "~/.ssh/id_rsa",
 	}
 }
@@ -90,72 +88,38 @@ func (easySSH *EasySSH) newClient() (*ssh.Client, error) {
 	return easySSH.SSHClient, nil
 }
 
-func (easySSH *EasySSH) ExecCommand(command string, timeout int) (*sshOutput, error) {
+func (easySSH *EasySSH) ExecCommand(command string) (*sshOutput, error) {
 	output := &sshOutput{
 		Command: command,
-		Timeout: timeout,
 	}
 
-	cancel := make(chan interface{})
-	ch := make(chan *sshOutput)
-
-	go func() {
-		client, err := easySSH.newClient()
-		if err != nil {
-			output.Stderr = "Could not establish ssh connection"
-			output.Error = err
-			ch <- output
-			return
-		}
-
-		select {
-		case <-cancel:
-			return
-		default:
-		}
-
-		session, err := client.NewSession()
-		if err != nil {
-			output.Stderr = "Could not establish ssh session"
-			output.Error = err
-
-			easySSH.SSHClient.Close()
-			easySSH.SSHClient = nil
-			ch <- output
-			return
-		}
-
-		select {
-		case <-cancel:
-			session.Close()
-			return
-		default:
-		}
-
-		var stdout, stderr bytes.Buffer
-		session.Stdout, session.Stderr = &stdout, &stderr
-		if err := session.Run(command); err != nil {
-			output.Error = err
-		}
-		session.Close()
-		output.Stdout = stdout.String()
-		output.Stderr = stderr.String()
-
-		select {
-		case <-cancel:
-			return
-		case ch <- output:
-		}
-	}()
-
-	select {
-	case output := <-ch:
-		return output, output.Error
-	case <- time.After(time.Duration(timeout) * time.Millisecond):
-		cancel <- true
-		output.Stderr = "Timeout exceeded while running command on the remote host"
-		return output, fmt.Errorf("command running timeout exceeded")
+	client, err := easySSH.newClient()
+	if err != nil {
+		output.Stderr = "Could not establish ssh connection"
+		output.Error = err
+		return output, err
 	}
+
+	session, err := client.NewSession()
+	if err != nil {
+		output.Stderr = "Could not establish ssh session"
+		output.Error = err
+
+		easySSH.SSHClient.Close()
+		easySSH.SSHClient = nil
+		return output, err
+	}
+
+	var stdout, stderr bytes.Buffer
+	session.Stdout, session.Stderr = &stdout, &stderr
+	if err := session.Run(command); err != nil {
+		output.Error = err
+	}
+	session.Close()
+	output.Stdout = stdout.String()
+	output.Stderr = stderr.String()
+
+	return output, err
 }
 
 func (easySSH *EasySSH) Scp(sourceFilePath, targetFilePath string) error {

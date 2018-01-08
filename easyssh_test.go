@@ -55,12 +55,7 @@ func TestEasySSH_ExecCommand(t *testing.T) {
 	ssh.Host = "sdf.org"
 	ssh.User = "new"
 
-	output, _ := ssh.ExecCommand("echo", 1000)
-	if output.Stderr != "Timeout exceeded while running command on the remote host" {
-		t.FailNow()
-	}
-
-	output, _ = ssh.ExecCommand("echo", 5000)
+	output, _ := ssh.ExecCommand("echo")
 	if output.Stderr == "Timeout exceeded while running command on the remote host" {
 		t.FailNow()
 	}
