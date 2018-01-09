@@ -96,15 +96,12 @@ func (easySSH *EasySSH) ExecCommand(command string) (*sshOutput, error) {
 	client, err := easySSH.newClient()
 	if err != nil {
 		output.Stderr = "Could not establish ssh connection"
-		output.Error = err
 		return output, err
 	}
 
 	session, err := client.NewSession()
 	if err != nil {
 		output.Stderr = "Could not establish ssh session"
-		output.Error = err
-
 		easySSH.SSHClient.Close()
 		easySSH.SSHClient = nil
 		return output, err
@@ -112,9 +109,7 @@ func (easySSH *EasySSH) ExecCommand(command string) (*sshOutput, error) {
 
 	var stdout, stderr bytes.Buffer
 	session.Stdout, session.Stderr = &stdout, &stderr
-	if err := session.Run(command); err != nil {
-		output.Error = err
-	}
+	err = session.Run(command)
 	session.Close()
 	output.Stdout = stdout.String()
 	output.Stderr = stderr.String()
